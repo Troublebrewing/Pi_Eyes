@@ -345,7 +345,14 @@ def frame(p):
 	#run predictor on frame
 	results = model(raw_image, stream=True)
 
-	if success:
+	# get first result
+	index = 0
+	for result in results:
+		if index == 0:
+			boxes = result.boxes
+		index = index + 1
+
+	if success and (len(boxes) > 0):
 		eye_control = 'vision'
 	else:
 		eye_control = 'auto'
@@ -365,12 +372,7 @@ def frame(p):
 		curX = ((-1)*(pos.x/mouse_scalex))+30
 		curY = ((-1)*(pos.y/mouse_scaley))+30
 	elif eye_control == 'vision':
-		# get first result
-		index = 0
-		for result in results:
-			if index == 0:
-				boxes = result.boxes
-			index = index + 1
+
 
 		#find box with highest confidence person
 		index_of_max_conf = 0
