@@ -10,11 +10,14 @@ import pi3d
 import random
 import threading
 import time
-import RPi.GPIO as GPIO
+import cv2
+from ultralytics import YOLO
+import pyautogui #for mouse input
+#import RPi.GPIO as GPIO
 from svg.path import Path, parse_path
 from xml.dom.minidom import parse
 from gfxutil import *
-from snake_eyes_bonnet import SnakeEyesBonnet
+#from snake_eyes_bonnet import SnakeEyesBonnet
 
 # INPUT CONFIG for eye motion ----------------------------------------------
 # ANALOG INPUTS REQUIRE SNAKE EYES BONNET
@@ -38,10 +41,10 @@ CRAZY_EYES      = False # If True, each eye moves in different directions
 
 # GPIO initialization ------------------------------------------------------
 
-GPIO.setmode(GPIO.BCM)
-if WINK_L_PIN >= 0: GPIO.setup(WINK_L_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-if BLINK_PIN  >= 0: GPIO.setup(BLINK_PIN , GPIO.IN, pull_up_down=GPIO.PUD_UP)
-if WINK_R_PIN >= 0: GPIO.setup(WINK_R_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+#GPIO.setmode(GPIO.BCM)
+#if WINK_L_PIN >= 0: GPIO.setup(WINK_L_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+#if BLINK_PIN  >= 0: GPIO.setup(BLINK_PIN , GPIO.IN, pull_up_down=GPIO.PUD_UP)
+#if WINK_R_PIN >= 0: GPIO.setup(WINK_R_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 
 # ADC stuff ----------------------------------------------------------------
@@ -49,17 +52,17 @@ if WINK_R_PIN >= 0: GPIO.setup(WINK_R_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 # ADC channels are read and stored in a separate thread to avoid slowdown
 # from blocking operations. The animation loop can read at its leisure.
 
-if JOYSTICK_X_IN >= 0 or JOYSTICK_Y_IN >= 0 or PUPIL_IN >= 0:
-	bonnet = SnakeEyesBonnet(daemon=True)
-	bonnet.setup_channel(JOYSTICK_X_IN, reverse=JOYSTICK_X_FLIP)
-	bonnet.setup_channel(JOYSTICK_Y_IN, reverse=JOYSTICK_Y_FLIP)
-	bonnet.setup_channel(PUPIL_IN, reverse=PUPIL_IN_FLIP)
-	bonnet.start()
+#if JOYSTICK_X_IN >= 0 or JOYSTICK_Y_IN >= 0 or PUPIL_IN >= 0:
+#	bonnet = SnakeEyesBonnet(daemon=True)
+#	bonnet.setup_channel(JOYSTICK_X_IN, reverse=JOYSTICK_X_FLIP)
+#	bonnet.setup_channel(JOYSTICK_Y_IN, reverse=JOYSTICK_Y_FLIP)
+#	bonnet.setup_channel(PUPIL_IN, reverse=PUPIL_IN_FLIP)
+#	bonnet.start()
 
 
 # Load SVG file, extract paths & convert to point lists --------------------
 
-dom               = parse("graphics/eye.svg")
+dom               = parse("graphics/dragon-eye.svg")
 vb                = get_view_box(dom)
 pupilMinPts       = get_points(dom, "pupilMin"      , 32, True , True )
 pupilMaxPts       = get_points(dom, "pupilMax"      , 32, True , True )
@@ -84,7 +87,7 @@ DISPLAY.set_background(0, 0, 0, 1) # r,g,b,alpha
 # the center point of the screen to the center of each eye.  This geometry
 # is explained more in-depth in fbx2.c.
 eyePosition = DISPLAY.width / 4
-eyeRadius   = 128  # Default; use 240 for IPS screens
+eyeRadius   = 256  # Default; use 240 for IPS screens
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--radius", type=int)
@@ -105,9 +108,9 @@ light  = pi3d.Light(lightpos=(0, -500, -500), lightamb=(0.2, 0.2, 0.2))
 
 # Load texture maps --------------------------------------------------------
 
-irisMap   = pi3d.Texture("graphics/iris.jpg"  , mipmap=False,
+irisMap   = pi3d.Texture("graphics/dragon-iris.jpg"  , mipmap=False,
               filter=pi3d.constants.GL_LINEAR)
-scleraMap = pi3d.Texture("graphics/sclera.png", mipmap=False,
+scleraMap = pi3d.Texture("graphics/dragon-sclera.png", mipmap=False,
               filter=pi3d.constants.GL_LINEAR, blend=True)
 lidMap    = pi3d.Texture("graphics/lid.png"   , mipmap=False,
               filter=pi3d.constants.GL_LINEAR, blend=True)
@@ -325,6 +328,7 @@ def frame(p):
 	global blinkStartTimeLeft, blinkStartTimeRight
 	global trackingPos
 	global trackingPosR
+	global eye_control
 
 	DISPLAY.loop_running()
 
@@ -336,13 +340,66 @@ def frame(p):
 #	if(now > beginningTime):
 #		print(frames/(now-beginningTime))
 
-	if JOYSTICK_X_IN >= 0 and JOYSTICK_Y_IN >= 0:
-		# Eye position from analog inputs
+	success, raw_image = cap.read()
 
-		curX = bonnet.channel[JOYSTICK_X_IN].value
-		curY = bonnet.channel[JOYSTICK_Y_IN].value
-		curX = -30.0 + curX * 60.0
-		curY = -30.0 + curY * 60.0
+	#run predictor on frame
+	results = model(raw_image, stream=True)
+
+	if success:
+		eye_control = 'vision'
+	else:
+		eye_control = 'auto'
+
+	if eye_control == 'mouse':
+		#get screen size
+		ss = pyautogui.size()
+
+		#get mouse position
+		pos = pyautogui.position()
+
+		#scale position
+		mouse_scalex = ss.width / 60
+		mouse_scaley = ss.height / 60
+
+		#set position
+		curX = ((-1)*(pos.x/mouse_scalex))+30
+		curY = ((-1)*(pos.y/mouse_scaley))+30
+	elif eye_control == 'vision':
+		# get first result
+		index = 0
+		for result in results:
+			if index == 0:
+				boxes = result.boxes
+			index = index + 1
+
+		#find box with highest confidence person
+		index_of_max_conf = 0
+		max_conf = 0
+		index = 0
+		for box in boxes:
+			conf = math.ceil((box.conf[0] * 100)) / 100
+			cls = int(box.cls[0])
+			if (cls == 0) and (conf > max_conf):
+				index_of_max_conf = i
+				max_conf = conf
+			index = index + 1
+
+		#find center coordinates
+		x1, y1, x2, y2 = boxes[0].xyxy[0]
+		x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+		x_center = (x1+x2)/2
+		y_center = (y1+y2)/2
+		print("Person with highest confidence (%2.2f %%) at (%d,%d)" % (max_conf, x_center, y_center))
+
+		cv2.rectangle(raw_image, (x1,y1), (x2,y2), (255,0,0), 2)
+		cv2.circle(raw_image, (int(x_center), int(y_center)), 2, (255,0,0), 2)
+
+		cv2.imshow('Frame', raw_image)
+		vision_scalex = ((x_center/640)*90)-45
+		vision_scaley = ((y_center/360)*90)-45
+
+		curX = vision_scalex
+		cury = vision_scaley
 	else :
 		# Autonomous eye position
 		if isMoving == True:
@@ -425,60 +482,60 @@ def frame(p):
 		# Check if blink time has elapsed...
 		if (now - blinkStartTimeLeft) >= blinkDurationLeft:
 			# Yes...increment blink state, unless...
-			if (blinkStateLeft == 1 and # Enblinking and...
-			    ((BLINK_PIN >= 0 and    # blink pin held, or...
-			      GPIO.input(BLINK_PIN) == GPIO.LOW) or
-			    (WINK_L_PIN >= 0 and    # wink pin held
-			      GPIO.input(WINK_L_PIN) == GPIO.LOW))):
-				# Don't advance yet; eye is held closed
-				pass
-			else:
+			#if (blinkStateLeft == 1 and # Enblinking and...
+			#    ((BLINK_PIN >= 0 and    # blink pin held, or...
+			#      GPIO.input(BLINK_PIN) == GPIO.LOW) or
+			#    (WINK_L_PIN >= 0 and    # wink pin held
+			#      GPIO.input(WINK_L_PIN) == GPIO.LOW))):
+			#	# Don't advance yet; eye is held closed
+			#	pass
+			#else:
 				blinkStateLeft += 1
 				if blinkStateLeft > 2:
 					blinkStateLeft = 0 # NOBLINK
 				else:
 					blinkDurationLeft *= 2.0
 					blinkStartTimeLeft = now
-	else:
-		if WINK_L_PIN >= 0 and GPIO.input(WINK_L_PIN) == GPIO.LOW:
-			blinkStateLeft     = 1 # ENBLINK
-			blinkStartTimeLeft = now
-			blinkDurationLeft  = random.uniform(0.035, 0.06)
+	#else:
+	#	if WINK_L_PIN >= 0 and GPIO.input(WINK_L_PIN) == GPIO.LOW:
+	#		blinkStateLeft     = 1 # ENBLINK
+	#		blinkStartTimeLeft = now
+	#		blinkDurationLeft  = random.uniform(0.035, 0.06)
 
 	if blinkStateRight: # Right eye currently winking/blinking?
 		# Check if blink time has elapsed...
 		if (now - blinkStartTimeRight) >= blinkDurationRight:
 			# Yes...increment blink state, unless...
-			if (blinkStateRight == 1 and # Enblinking and...
-			    ((BLINK_PIN >= 0 and    # blink pin held, or...
-			      GPIO.input(BLINK_PIN) == GPIO.LOW) or
-			    (WINK_R_PIN >= 0 and    # wink pin held
-			      GPIO.input(WINK_R_PIN) == GPIO.LOW))):
+			#if (blinkStateRight == 1 and # Enblinking and...
+			#    ((BLINK_PIN >= 0 and    # blink pin held, or...
+			#      GPIO.input(BLINK_PIN) == GPIO.LOW) or
+			#    (WINK_R_PIN >= 0 and    # wink pin held
+			#      GPIO.input(WINK_R_PIN) == GPIO.LOW))):
 				# Don't advance yet; eye is held closed
-				pass
-			else:
+			#	pass
+			#else:
 				blinkStateRight += 1
 				if blinkStateRight > 2:
 					blinkStateRight = 0 # NOBLINK
 				else:
 					blinkDurationRight *= 2.0
 					blinkStartTimeRight = now
-	else:
-		if WINK_R_PIN >= 0 and GPIO.input(WINK_R_PIN) == GPIO.LOW:
-			blinkStateRight     = 1 # ENBLINK
-			blinkStartTimeRight = now
-			blinkDurationRight  = random.uniform(0.035, 0.06)
+	#else:
+		#if WINK_R_PIN >= 0 and GPIO.input(WINK_R_PIN) == GPIO.LOW:
+		#	blinkStateRight     = 1 # ENBLINK
+		#	blinkStartTimeRight = now
+		#	blinkDurationRight  = random.uniform(0.035, 0.06)
 
-	if BLINK_PIN >= 0 and GPIO.input(BLINK_PIN) == GPIO.LOW:
-		duration = random.uniform(0.035, 0.06)
-		if blinkStateLeft == 0:
-			blinkStateLeft     = 1
-			blinkStartTimeLeft = now
-			blinkDurationLeft  = duration
-		if blinkStateRight == 0:
-			blinkStateRight     = 1
-			blinkStartTimeRight = now
-			blinkDurationRight  = duration
+	#if BLINK_PIN >= 0 and GPIO.input(BLINK_PIN) == GPIO.LOW:
+	#	duration = random.uniform(0.035, 0.06)
+	#	if blinkStateLeft == 0:
+	#		blinkStateLeft     = 1
+	#		blinkStartTimeLeft = now
+	#		blinkDurationLeft  = duration
+	#	if blinkStateRight == 0:
+	#		blinkStateRight     = 1
+	#		blinkStartTimeRight = now
+	#		blinkDurationRight  = duration
 
 	if TRACKING:
 		n = 0.4 - curY / 60.0
@@ -647,7 +704,19 @@ def split( # Recursive simulated pupil response when no analog sensor
 			frame(v) # Draw frame w/interim pupil scale value
 
 
+
+# From https://github.com/HackerShackOfficial/Tracking-Turret/blob/master/turret.py#L423
+
 # MAIN LOOP -- runs continuously -------------------------------------------
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap.set(3, 640)
+cap.set(4, 360)
+
+model = YOLO('yolov8n.pt')
+#model = YOLO('yolov8s.pt')
+#model = YOLO('yolov8m.pt')
+#model = YOLO('yolov8l.pt')
+#model = YOLO('yolov8x.pt')
 
 while True:
 
@@ -662,7 +731,6 @@ while True:
 		if PUPIL_SMOOTH > 0:
 			v = ((currentPupilScale * (PUPIL_SMOOTH - 1) + v) /
 			     PUPIL_SMOOTH)
-		frame(v)
 	else: # Fractal auto pupil scale
 		v = random.random()
 		split(currentPupilScale, v, 4.0, 1.0)
